@@ -23,11 +23,18 @@ class AuditLogPlugin:
     def __init__(self):
         self.name = "audit_log"
         self.logs: list[dict] = []
-        self._open: dict[str, float] = {}
+        self._open: dict[str, dict] = {}
 
     def record_input(self, *, user_id: str, text: str, request_id: str | None = None):
-        """TODO: store input + start timestamp keyed by request_id/user_id."""
-        raise NotImplementedError("Implement AuditLogPlugin.record_input")
+        """Store input + start timestamp keyed by request_id/user_id."""
+        req_id = request_id or f"{user_id}_{len(self.logs)}_{len(self._open)}"
+        self._open[req_id] = {
+            "user_id": user_id,
+            "text": text,
+            "start_time": datetime.now(timezone.utc).timestamp(),
+            "timestamp": utc_now_iso(),
+        }
+        return req_id
 
     def record_output(
         self,
@@ -38,15 +45,41 @@ class AuditLogPlugin:
         layer: str | None = None,
         request_id: str | None = None,
     ):
-        """TODO: store output, layer decision, latency; append to self.logs."""
-        raise NotImplementedError("Implement AuditLogPlugin.record_output")
+        """Store output, layer decision, latency; append to self.logs."""
+        req_id = request_id
+        if not req_id:
+            # Match latest open record for this user
+            matching = [k for k, v in self._open.items() if v["user_id"] == user_id]
+            req_id = matching[-1] if matching else None
+
+        open_data = self._open.pop(req_id, {}) if req_id else {}
+        start_time = open_data.get("start_time")
+        latency = (
+            datetime.now(timezone.utc).timestamp() - start_time
+            if start_time
+            else 0.0
+        )
+
+        entry = {
+            "request_id": req_id or f"req_{len(self.logs) + 1}",
+            "user_id": user_id,
+            "input_text": open_data.get("text", ""),
+            "output_text": text,
+            "blocked": blocked,
+            "layer": layer,
+            "latency_seconds": round(latency, 4),
+            "timestamp": utc_now_iso(),
+        }
+        self.logs.append(entry)
+        return entry
 
     def export_json(self, filepath: str | None = None):
         """Write logs to disk (JSON array) under repo-root ``outputs/`` by default."""
-        # TODO: path = filepath or default_audit_log_path()
-        #       ensure parent dirs exist, dump self.logs with indent=2
-        _ = filepath or default_audit_log_path()
-        raise NotImplementedError("Implement AuditLogPlugin.export_json")
+        target_path = Path(filepath or default_audit_log_path())
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        target_path.write_text(
+            json.dumps(self.logs, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
 
 
 def utc_now_iso() -> str:
